@@ -1,0 +1,13 @@
+streamlit
+folium
+streamlit-folium
+pandas
+numpy
+plotly
+gdown
+prophet
+lightgbm
+optuna
+scikit-learn
+statsmodels
+holidays

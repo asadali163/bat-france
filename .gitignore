@@ -1,0 +1,41 @@
+# Python environment
+venv/
+env/
+.venv/
+
+# Bytecode
+__pycache__/
+*.pyc
+
+# Streamlit cache
+.streamlit/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Data (VERY IMPORTANT for your case)
+data/raw/
+data/*.csv
+data/*.parquet
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# IDEs
+.vscode/
+.idea/
+
+# Notebook helper/injection scripts (dev tooling, not project code)
+notebooks/add_*.py
+
+# Claude Code memory files
+.claude/
+
+# Secrets / env
+.env
+*.env
+secrets.toml
