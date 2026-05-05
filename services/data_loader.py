@@ -5,13 +5,38 @@ import pandas as pd
 from config import GDRIVE_SELL_DATA, GDRIVE_WEATHER_CSV, GDRIVE_EVENTS_DATA, DATA_CACHE_DIR
 
 
+def _is_valid_csv(path: str) -> bool:
+    """Return False if the file looks like an HTML page (failed gdown download)."""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(512).lstrip()
+        return not header.startswith(b"<")
+    except OSError:
+        return False
+
+
 def _download(file_id: str, filename: str) -> str:
     """Download a file from Google Drive if not already cached. Returns local path."""
     os.makedirs(DATA_CACHE_DIR, exist_ok=True)
     local_path = os.path.join(DATA_CACHE_DIR, filename)
+
+    # Remove corrupted/HTML files from a previous bad download
+    if os.path.exists(local_path) and not _is_valid_csv(local_path):
+        os.remove(local_path)
+
     if not os.path.exists(local_path):
         with st.spinner(f"Downloading {filename} from Google Drive…"):
+            # fuzzy=True handles the virus-scan confirmation page for large files (>100 MB)
             gdown.download(id=file_id, output=local_path, quiet=False)
+
+        if not _is_valid_csv(local_path):
+            os.remove(local_path)
+            st.error(
+                f"❌ Download of **{filename}** failed (got an HTML page instead of CSV). "
+                "Make sure the Google Drive file is shared as 'Anyone with the link'."
+            )
+            st.stop()
+
     return local_path
 
 

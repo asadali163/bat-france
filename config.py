@@ -7,8 +7,8 @@ EVENTS_DATA = "./data/raw/events_batch2.csv"
 
 
 GDRIVE_SELL_DATA = "1RrFyCnwfOnXaoA2fiwr7kZELb6cBNHNg"
-GDRIVE_WEATHER_CSV = "1tINRJVwcDRQ_lQNeewHXyVvbj1iObvXO"
-GDRIVE_EVENTS_DATA = "1AQztAmP0mph23XSRAz24_8s2ndy1-Xm5"
+GDRIVE_WEATHER_CSV = "1AQztAmP0mph23XSRAz24_8s2ndy1-Xm5"
+GDRIVE_EVENTS_DATA = "1tINRJVwcDRQ_lQNeewHXyVvbj1iObvXO"
 
 # Local cache directory — files are downloaded here on first run
 DATA_CACHE_DIR = "./data/cache"
