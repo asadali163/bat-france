@@ -15,6 +15,7 @@ __pycache__/
 
 # Data (VERY IMPORTANT for your case)
 data/raw/
+data/cache/
 data/*.csv
 data/*.parquet
 

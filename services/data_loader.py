@@ -1,6 +1,18 @@
+import os
+import gdown
 import streamlit as st
 import pandas as pd
-from config import SELL_DATA, WEATHER_CSV, EVENTS_DATA
+from config import GDRIVE_SELL_DATA, GDRIVE_WEATHER_CSV, GDRIVE_EVENTS_DATA, DATA_CACHE_DIR
+
+
+def _download(file_id: str, filename: str) -> str:
+    """Download a file from Google Drive if not already cached. Returns local path."""
+    os.makedirs(DATA_CACHE_DIR, exist_ok=True)
+    local_path = os.path.join(DATA_CACHE_DIR, filename)
+    if not os.path.exists(local_path):
+        with st.spinner(f"Downloading {filename} from Google Drive…"):
+            gdown.download(id=file_id, output=local_path, quiet=False)
+    return local_path
 
 
 def wrangle(df: pd.DataFrame) -> pd.DataFrame:
@@ -29,53 +41,35 @@ def wrangle(df: pd.DataFrame) -> pd.DataFrame:
         },
         inplace=True,
     )
-
     df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
-
     return df
 
 
-@st.cache_data  # Load sell data locally.
+@st.cache_data(show_spinner=False)
 def load_sell_data():
-    try:
-        df = pd.read_csv(SELL_DATA, low_memory=False)
-        df = wrangle(df)
-        df_sellin = df[df["data_type"] == "sell_in"].copy()
-        df_sellout = df[
-            (df["data_type"] == "sell_out")
-            & (df["sku_code"].astype(str).str.strip() != "0")
-        ].copy()
-        # Replace missing category with FMC
-        df_sellout["category"] = df_sellout["category"].fillna("FMC")
-        return df_sellin, df_sellout
-    except FileNotFoundError:
-        st.error(
-            f"❌ Could not find `{SELL_DATA}`. Make sure it is in the same folder as `app.py`."
-        )
-        return pd.DataFrame()
+    path = _download(GDRIVE_SELL_DATA, "combined_df.csv")
+    df = pd.read_csv(path, low_memory=False)
+    df = wrangle(df)
+    df_sellin = df[df["data_type"] == "sell_in"].copy()
+    df_sellout = df[
+        (df["data_type"] == "sell_out")
+        & (df["sku_code"].astype(str).str.strip() != "0")
+    ].copy()
+    df_sellout["category"] = df_sellout["category"].fillna("FMC")
+    return df_sellin, df_sellout
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def load_weather_data() -> pd.DataFrame:
-    try:
-        df = pd.read_csv(WEATHER_CSV, low_memory=False)
-        df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
-        return df
-    except FileNotFoundError:
-        st.error(
-            f"❌ Could not find `{WEATHER_CSV}`. Make sure it is in the same folder as `app.py`."
-        )
-        return pd.DataFrame()
+    path = _download(GDRIVE_WEATHER_CSV, "weather_till_march2.csv")
+    df = pd.read_csv(path, low_memory=False)
+    df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
+    return df
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def load_events_data():
-    try:
-        df = pd.read_csv(EVENTS_DATA, low_memory=False)
-        df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
-        return df
-    except FileNotFoundError:
-        st.error(
-            f"❌ Could not find `{EVENTS_DATA}`. Make sure it is in the same folder as `app.py`."
-        )
-        return pd.DataFrame()
+    path = _download(GDRIVE_EVENTS_DATA, "events_batch2.csv")
+    df = pd.read_csv(path, low_memory=False)
+    df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
+    return df
