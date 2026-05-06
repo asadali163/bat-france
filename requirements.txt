@@ -4,7 +4,7 @@ streamlit-folium
 pandas
 numpy
 plotly
-gdown
+pyarrow
 prophet
 lightgbm
 optuna

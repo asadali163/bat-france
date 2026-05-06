@@ -17,7 +17,7 @@ __pycache__/
 data/raw/
 data/cache/
 data/*.csv
-data/*.parquet
+# data/parquet/ is intentionally tracked — small Parquet files live in the repo
 
 # OS files
 .DS_Store
