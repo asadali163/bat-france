@@ -29,7 +29,7 @@ def wrangle(df: pd.DataFrame) -> pd.DataFrame:
         },
         inplace=True,
     )
-    df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
+    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y-%m-%d")
     return df
 
 
@@ -49,12 +49,12 @@ def load_sell_data():
 @st.cache_data(show_spinner=False)
 def load_weather_data() -> pd.DataFrame:
     df = pd.read_parquet(WEATHER_CSV)
-    df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
+    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y-%m-%d")
     return df
 
 
 @st.cache_data(show_spinner=False)
 def load_events_data():
     df = pd.read_parquet(EVENTS_DATA)
-    df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
+    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y-%m-%d")
     return df

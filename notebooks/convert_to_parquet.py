@@ -12,6 +12,9 @@ os.makedirs(OUT_DIR, exist_ok=True)
 def optimise_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     """Cast low-cardinality object columns to category, floats to float32."""
     for col in df.select_dtypes("object").columns:
+        # Skip date-like columns — keep them as plain strings so pd.to_datetime works cleanly on load
+        if col.lower() == "date" or col.lower().endswith("_date"):
+            continue
         n_unique = df[col].nunique()
         if n_unique / len(df) < 0.5:          # less than 50% unique → category
             df[col] = df[col].astype("category")
