@@ -1,7 +1,8 @@
 import streamlit as st
 from services.data_loader import load_weather_data
 from services.filters import get_customer_list_weather, get_fmc_only
-from charts.weather_charts import plot_customer_weather
+from charts.weather_charts import plot_customer_weather, plot_rain_band_chart, plot_ols_rain_chart
+from services.porcessors import rain_band_processor, ols_rain_processor
 
 
 def render(sellout, sellin):
@@ -42,5 +43,14 @@ def render(sellout, sellin):
     ## Now Display the chart.
     selected_customer_df = sellout[sellout["customer_code"] == selected_customer]
     fig = plot_customer_weather(selected_customer_df, rain_range, robust)
-
     st.plotly_chart(fig, width="stretch")
+
+    st.markdown("---")
+    dec, band_stats, stats_dict = rain_band_processor(selected_customer_df)
+    fig2 = plot_rain_band_chart(dec, band_stats, stats_dict)
+    st.plotly_chart(fig2, use_container_width=True)
+
+    st.markdown("---")
+    coef_df, scalar_df, meta = ols_rain_processor(selected_customer_df)
+    fig3 = plot_ols_rain_chart(coef_df, scalar_df, meta)
+    st.plotly_chart(fig3, use_container_width=True)

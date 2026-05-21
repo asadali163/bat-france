@@ -35,7 +35,10 @@ def wrangle(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_sell_data():
     try:
-        df = pd.read_csv("http://192.168.99.122:8000/combined_df.csv", low_memory=False)
+        # df = pd.read_csv("http://192.168.99.122:8000/combined_df.csv", low_memory=False)
+        df = pd.read_csv(
+            "/home/asad/Downloads/combined_df.gz", low_memory=False, compression="gzip"
+        )
         df = wrangle(df)
         df_sellin = df[df["data_type"] == "sell_in"].copy()
         df_sellout = df[

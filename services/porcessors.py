@@ -3,6 +3,8 @@ import numpy as np
 import streamlit as st
 from decimal import Decimal, ROUND_HALF_UP
 from statsmodels.tsa.seasonal import STL
+from scipy import stats as scipy_stats
+import statsmodels.formula.api as smf
 
 
 def weather_analysis_processor(df: pd.DataFrame, robust=True) -> pd.DataFrame:
@@ -45,23 +47,25 @@ def events_analysis_processor(
         .rename(columns={"sales_quantity": "sellout"})
     )
 
-    sellin_dates = pd.date_range(
-        sellin_daily["date"].min(), sellin_daily["date"].max(), freq="D"
-    )
-    sellout_dates = pd.date_range(
-        sellout_daily["date"].min(), sellout_daily["date"].max(), freq="D"
-    )
+    if not sellin_daily.empty and pd.notna(sellin_daily["date"].min()):
+        sellin_dates = pd.date_range(
+            sellin_daily["date"].min(), sellin_daily["date"].max(), freq="D"
+        )
+        sellin_daily = (
+            pd.DataFrame({"date": sellin_dates})
+            .merge(sellin_daily, on="date", how="left")
+            .fillna(0)
+        )
 
-    sellin_daily = (
-        pd.DataFrame({"date": sellin_dates})
-        .merge(sellin_daily, on="date", how="left")
-        .fillna(0)
-    )
-    sellout_daily = (
-        pd.DataFrame({"date": sellout_dates})
-        .merge(sellout_daily, on="date", how="left")
-        .fillna(0)
-    )
+    if not sellout_daily.empty and pd.notna(sellout_daily["date"].min()):
+        sellout_dates = pd.date_range(
+            sellout_daily["date"].min(), sellout_daily["date"].max(), freq="D"
+        )
+        sellout_daily = (
+            pd.DataFrame({"date": sellout_dates})
+            .merge(sellout_daily, on="date", how="left")
+            .fillna(0)
+        )
 
     df = (
         sellin_daily.merge(sellout_daily, on="date", how="outer")
@@ -186,3 +190,182 @@ def get_shops_for_event(
     return df_events[
         (df_events["name"] == event_name) & (df_events["distance_m"] <= max_distance_m)
     ].copy()
+
+
+def rain_band_processor(
+    df: pd.DataFrame, rain_mm: float = 3.0
+) -> tuple:
+    """
+    Returns (dec_df, band_stats_df, stats_dict) for the rainfall-band chart.
+    df must already have precipitation merged in (as in the weather analysis view).
+    """
+    df = df.copy()
+
+    # Daily aggregation — multiple SKU rows per date collapse here
+    m = (
+        df.groupby("date")
+        .agg(
+            sales_quantity=("sales_quantity", "sum"),
+            precipitation=("precipitation", "mean"),
+        )
+        .reset_index()
+        .sort_values("date")
+    )
+    m["rained"] = m["precipitation"] > rain_mm
+
+    # STL requires a gap-free series; interpolate closed-day gaps
+    s = m.set_index("date")["sales_quantity"].asfreq("D")
+    s = s.interpolate("time", limit_direction="both")
+
+    stl = STL(s, period=7, robust=True).fit()
+
+    dec = pd.DataFrame(
+        {"trend": stl.trend, "seasonal": stl.seasonal, "remainder": stl.resid}
+    )
+    dec.index.name = "date"
+    dec = dec.reset_index()
+    dec = dec.merge(
+        m[["date", "precipitation", "rained", "sales_quantity"]], on="date", how="inner"
+    )
+
+    # Keep only real selling days
+    real_days = m.loc[m["sales_quantity"] > 0, "date"]
+    dec = dec[dec["date"].isin(real_days)].copy()
+
+    dec["band"] = pd.cut(
+        dec["precipitation"],
+        [-0.01, 0.1, 2, 8, 1e9],
+        labels=["none", "light", "moderate", "heavy"],
+    )
+
+    # Correlation & t-test (dry vs rainy)
+    corr = dec[["remainder", "precipitation"]].corr().iloc[0, 1]
+    dry = dec.loc[~dec["rained"], "remainder"]
+    rainy = dec.loc[dec["rained"], "remainder"]
+
+    stats_dict: dict = {"corr": corr, "p_ttest": float("nan"), "F_anova": float("nan"), "p_anova": float("nan")}
+    if len(dry) > 1 and len(rainy) > 1:
+        _, p_ttest = scipy_stats.ttest_ind(dry, rainy, equal_var=False)
+        stats_dict["p_ttest"] = p_ttest
+
+    groups = [g["remainder"].values for _, g in dec.groupby("band", observed=True) if len(g) > 1]
+    if len(groups) >= 2:
+        F, p_anova = scipy_stats.f_oneway(*groups)
+        stats_dict.update({"F_anova": F, "p_anova": p_anova})
+
+    band_stats = (
+        dec.groupby("band", observed=True)["remainder"]
+        .agg(["count", "mean", "std"])
+        .reset_index()
+    )
+    band_stats["sem"] = band_stats["std"] / band_stats["count"] ** 0.5
+
+    return dec, band_stats, stats_dict
+
+
+_RAIN_BINS = [-0.01, 0.1, 2, 8, 1e9]
+_RAIN_LABS = ["none", "light", "moderate", "heavy"]
+
+
+def ols_rain_processor(df: pd.DataFrame) -> tuple:
+    """
+    Fits OLS: log(sales) ~ rain band (same-day, lag-1, lead-1) + temperature + windspeed + DOW + month + trend.
+    Returns (coef_df, scalar_df, meta_dict).
+    coef_df  — % change vs dry day per band × effect, with 95 % CI and p-value.
+    scalar_df — temperature & windspeed % change per unit, with CI and p-value.
+    meta_dict — r2, n, or error key if fitting failed.
+    """
+    df = df.copy()
+
+    m = (
+        df.groupby("date")
+        .agg(
+            sales_quantity=("sales_quantity", "sum"),
+            precipitation=("precipitation", "mean"),
+            temperature=("temperature", "mean"),
+            windspeed=("windspeed", "mean"),
+        )
+        .reset_index()
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+    m = m.dropna(subset=["precipitation", "temperature", "windspeed"])
+    m = m[m["sales_quantity"] > 0].copy()
+
+    if len(m) < 30:
+        return None, None, {"error": "Not enough data (< 30 selling days)"}
+
+    m["log_q"] = np.log(m["sales_quantity"])
+    m["dow"] = m["date"].dt.dayofweek.astype("category")
+    m["month"] = m["date"].dt.month.astype("category")
+    m["trend"] = (m["date"] - m["date"].min()).dt.days
+    m["band"] = pd.Categorical(
+        pd.cut(m["precipitation"], _RAIN_BINS, labels=_RAIN_LABS), categories=_RAIN_LABS
+    )
+    m["band_lag1"] = m["band"].shift(1)
+    m["band_lead1"] = m["band"].shift(-1)
+    m["lag_ok"] = m["date"].diff().dt.days == 1
+    m["lead_ok"] = (-m["date"].diff(-1).dt.days) == 1
+
+    model_df = m.dropna(subset=["band_lag1", "band_lead1"])
+    model_df = model_df[model_df["lag_ok"] & model_df["lead_ok"]]
+
+    if len(model_df) < 20:
+        return None, None, {"error": "Not enough consecutive days for lag/lead model"}
+
+    formula = (
+        "log_q ~ C(band) + C(band_lag1) + C(band_lead1)"
+        " + temperature + windspeed"
+        " + C(dow) + C(month) + trend"
+    )
+
+    try:
+        model = smf.ols(formula, data=model_df).fit(cov_type="HC3")
+    except Exception as exc:
+        return None, None, {"error": str(exc)}
+
+    ci = model.conf_int()
+
+    coef_rows = []
+    for effect_label, prefix in [
+        ("Same-day", "C(band)["),
+        ("Yesterday", "C(band_lag1)["),
+        ("Tomorrow", "C(band_lead1)["),
+    ]:
+        for term in model.params.index:
+            if term.startswith(prefix) and "T." in term:
+                band = term.split("T.")[-1].rstrip("]")
+                coef = model.params[term]
+                lo, hi = ci.loc[term]
+                coef_rows.append(
+                    {
+                        "effect": effect_label,
+                        "band": band,
+                        "pct_change": np.expm1(coef) * 100,
+                        "ci_low": np.expm1(lo) * 100,
+                        "ci_high": np.expm1(hi) * 100,
+                        "p": model.pvalues[term],
+                    }
+                )
+
+    scalar_rows = []
+    for var in ["temperature", "windspeed"]:
+        if var in model.params:
+            coef = model.params[var]
+            lo, hi = ci.loc[var]
+            scalar_rows.append(
+                {
+                    "variable": var,
+                    "pct_change": np.expm1(coef) * 100,
+                    "ci_low": np.expm1(lo) * 100,
+                    "ci_high": np.expm1(hi) * 100,
+                    "p": model.pvalues[var],
+                }
+            )
+
+    return (
+        pd.DataFrame(coef_rows),
+        pd.DataFrame(scalar_rows),
+        {"r2": model.rsquared, "n": len(model_df)},
+    )

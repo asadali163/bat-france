@@ -2,7 +2,6 @@ import streamlit as st
 from views import weather_analysis, event_analysis, forecasting
 from services.data_loader import load_sell_data
 
-
 st.set_page_config(
     page_title="Streamlit App",
     layout="wide",
@@ -28,7 +27,8 @@ def main():
         weather_analysis.render(sellout=sellout, sellin=sellin)
 
     with events_analysis:
-        event_analysis.render(sellout=sellout, sellin=sellin)
+        pass
+        # event_analysis.render(sellout=sellout, sellin=sellin)
 
     with forecasting_analysis:
         forecasting.render(sellout, sellin)

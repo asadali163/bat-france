@@ -57,4 +57,7 @@ def load_weather_data() -> pd.DataFrame:
 def load_events_data():
     df = pd.read_parquet(EVENTS_DATA)
     df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y-%m-%d")
+    # float32 → float64 so .round(4) comparisons with sellout lat/lon (float64) work correctly
+    df["shop_lat"] = df["shop_lat"].astype("float64")
+    df["shop_lon"] = df["shop_lon"].astype("float64")
     return df
