@@ -1,7 +1,11 @@
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
-from services.porcessors import weather_analysis_processor, rain_band_processor, ols_rain_processor
+from services.porcessors import (
+    weather_analysis_processor,
+    rain_band_processor,
+    ols_rain_processor,
+)
 
 
 def plot_customer_weather(df, rain_range, robust=True):
@@ -172,7 +176,7 @@ def plot_rain_band_chart(df, band_stats, stats_dict):
     p_ttest = stats_dict.get("p_ttest", float("nan"))
     title = (
         f"Rain vs sales — STL remainder  |  "
-        f"corr={corr:+.3f}  |  dry vs rainy p={p_ttest:.3f}  |  ANOVA p={p_anova:.3f}"
+        f"corr={corr:+.3f}  |  dry vs rainy p={p_ttest:.3f}"
     )
 
     fig.update_xaxes(title_text="rainfall band", row=1, col=1)
@@ -194,8 +198,12 @@ def plot_ols_rain_chart(coef_df, scalar_df, meta):
         fig = go.Figure()
         fig.add_annotation(
             text=meta.get("error", "Not enough data"),
-            xref="paper", yref="paper", x=0.5, y=0.5,
-            showarrow=False, font=dict(size=14),
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(size=14),
         )
         fig.update_layout(height=200, template="plotly_white")
         return fig
@@ -206,37 +214,56 @@ def plot_ols_rain_chart(coef_df, scalar_df, meta):
     def sig_label(p):
         return "***" if p < 0.01 else "**" if p < 0.05 else "*" if p < 0.1 else ""
 
-    same_day = coef_df[coef_df["effect"] == "Same-day"]
+    same_day = coef_df[coef_df["effect"] == "Same-day"].set_index("band")
+
+    # Build aligned arrays for a single trace
+    xs, ys, err_hi, err_lo, colors, hover_texts, text_labels = (
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+    )
+    for band in bands:
+        if band not in same_day.index:
+            continue
+        row = same_day.loc[band]
+        sig = sig_label(row["p"])
+        xs.append(band)
+        ys.append(row["pct_change"])
+        err_hi.append(row["ci_high"] - row["pct_change"])
+        err_lo.append(row["pct_change"] - row["ci_low"])
+        colors.append(band_colors[band])
+        hover_texts.append(
+            f"<b>{band}</b><br>% change: {row['pct_change']:.2f}%<br>p={row['p']:.3f} {sig}"
+        )
+        text_labels.append(f"{row['pct_change']:+.1f}% {sig}")
 
     fig = go.Figure()
-
-    for band in bands:
-        row = same_day[same_day["band"] == band]
-        if row.empty:
-            continue
-        row = row.iloc[0]
-        sig = sig_label(row["p"])
-        fig.add_trace(
-            go.Bar(
-                name=band,
-                x=[band],
-                y=[row["pct_change"]],
-                error_y=dict(
-                    type="data",
-                    symmetric=False,
-                    array=[row["ci_high"] - row["pct_change"]],
-                    arrayminus=[row["pct_change"] - row["ci_low"]],
-                    visible=True,
-                ),
-                marker_color=band_colors[band],
-                hovertemplate=(
-                    f"<b>{band}</b><br>"
-                    "% change: %{y:.2f}%<br>"
-                    f"p={row['p']:.3f} {sig}<extra></extra>"
-                ),
-                showlegend=False,
-            )
+    fig.add_trace(
+        go.Bar(
+            x=xs,
+            y=ys,
+            width=0.5,  # ← controls bar width (0–1, where 1 fills the category slot)
+            marker_color=colors,
+            error_y=dict(
+                type="data",
+                symmetric=False,
+                array=err_hi,
+                arrayminus=err_lo,
+                thickness=1.5,
+                width=8,
+                color="#333",
+            ),
+            text=text_labels,
+            textposition="outside",
+            hovertext=hover_texts,
+            hovertemplate="%{hovertext}<extra></extra>",
+            showlegend=False,
         )
+    )
 
     fig.add_hline(y=0, line_dash="dot", line_color="gray")
 
@@ -246,11 +273,13 @@ def plot_ols_rain_chart(coef_df, scalar_df, meta):
     fig.update_xaxes(title_text="Rainfall band")
     fig.update_yaxes(title_text="% change in sales vs dry day")
     fig.update_layout(
-        height=400,
+        height=420,
+        width=600,  # ← cap the overall width so bars don't get stretched
         title_text=f"OLS: Same-day rain effect on sales  |  R²={r2:.3f}  |  n={n} days",
         template="plotly_white",
         hovermode="closest",
-        margin=dict(t=60, b=40),
+        bargap=0.4,  # ← also helps narrow bars (only matters with multiple traces)
+        margin=dict(t=60, b=40, l=60, r=40),
     )
 
     return fig
