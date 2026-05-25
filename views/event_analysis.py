@@ -29,8 +29,8 @@ def _cached_events_chart(df: pd.DataFrame):
 def render(sellout, sellin):
     df_events = load_events_data()
 
-    sellin = get_fmc_only(sellin)
-    sellout = get_fmc_only(sellout)
+    # sellin = get_fmc_only(sellin)
+    # sellout = get_fmc_only(sellout)
 
     # Get Customer List
     col1, col2 = st.columns(2)
