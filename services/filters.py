@@ -81,26 +81,22 @@ def get_customer_list_weather(df: pd.DataFrame, Top_100: bool = True) -> list:
     return df_results["customer_code"].tolist()
 
 
-st.cache_data
-
-
+@st.cache_data
 def get_customer_list_events(df: pd.DataFrame, Top_100: bool = True) -> list:
     """
     Get customer list for events by sales quantity
     """
+
+    customer_list = (
+        df.groupby("customer_code")["sales_quantity"].sum().sort_values(ascending=False)
+    )
+
+    # Remove customer_code = 0 and NaN
+    customer_list = customer_list[
+        (customer_list.index != 0) & (customer_list.index.notna())
+    ]
+
     if Top_100:
-        customer_list = (
-            df.groupby("customer_code")["sales_quantity"]
-            .sum()
-            .sort_values(ascending=False)
-            .head(100)
-            .index.tolist()
-        )
-    else:
-        customer_list = (
-            df.groupby("customer_code")["sales_quantity"]
-            .sum()
-            .sort_values(ascending=False)
-            .index.tolist()
-        )
-    return customer_list
+        customer_list = customer_list.head(100)
+
+    return customer_list.index.tolist()

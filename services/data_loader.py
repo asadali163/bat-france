@@ -42,6 +42,7 @@ def load_sell_data():
         (df["data_type"] == "sell_out")
         & (df["sku_code"].astype(str).str.strip() != "0")
     ].copy()
+    df_sellout = df_sellout[df_sellout["customer_code"] != 0].copy()
     df_sellout["category"] = df_sellout["category"].fillna("FMC")
     return df_sellin, df_sellout
 

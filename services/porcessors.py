@@ -192,9 +192,7 @@ def get_shops_for_event(
     ].copy()
 
 
-def rain_band_processor(
-    df: pd.DataFrame, rain_mm: float = 3.0
-) -> tuple:
+def rain_band_processor(df: pd.DataFrame, rain_mm: float = 3.0) -> tuple:
     """
     Returns (dec_df, band_stats_df, stats_dict) for the rainfall-band chart.
     df must already have precipitation merged in (as in the weather analysis view).
@@ -243,12 +241,21 @@ def rain_band_processor(
     dry = dec.loc[~dec["rained"], "remainder"]
     rainy = dec.loc[dec["rained"], "remainder"]
 
-    stats_dict: dict = {"corr": corr, "p_ttest": float("nan"), "F_anova": float("nan"), "p_anova": float("nan")}
+    stats_dict: dict = {
+        "corr": corr,
+        "p_ttest": float("nan"),
+        "F_anova": float("nan"),
+        "p_anova": float("nan"),
+    }
     if len(dry) > 1 and len(rainy) > 1:
         _, p_ttest = scipy_stats.ttest_ind(dry, rainy, equal_var=False)
         stats_dict["p_ttest"] = p_ttest
 
-    groups = [g["remainder"].values for _, g in dec.groupby("band", observed=True) if len(g) > 1]
+    groups = [
+        g["remainder"].values
+        for _, g in dec.groupby("band", observed=True)
+        if len(g) > 1
+    ]
     if len(groups) >= 2:
         F, p_anova = scipy_stats.f_oneway(*groups)
         stats_dict.update({"F_anova": F, "p_anova": p_anova})

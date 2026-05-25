@@ -13,6 +13,6 @@ def render(sellin: pd.DataFrame, sellout: pd.DataFrame):
         selected_customer = st.selectbox(
             "Select Customer", customer_list, key="customer_forecasting"
         )
-        print("Selected Customer is : ", selected_customer)
+        # print("Selected Customer is : ", selected_customer)
     with col2:
         st.write("Second Column")

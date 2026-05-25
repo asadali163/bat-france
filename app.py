@@ -31,7 +31,8 @@ def main():
         # event_analysis.render(sellout=sellout, sellin=sellin)
 
     with forecasting_analysis:
-        forecasting.render(sellout, sellin)
+        pass
+        # forecasting.render(sellout, sellin)
 
 
 if __name__ == "__main__":
