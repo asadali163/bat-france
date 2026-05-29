@@ -91,9 +91,11 @@ def get_customer_list_events(df: pd.DataFrame, Top_100: bool = True) -> list:
         df.groupby("customer_code")["sales_quantity"].sum().sort_values(ascending=False)
     )
 
-    # Remove customer_code = 0 and NaN
+    # Remove customer_code = 0 / "0" and NaN
     customer_list = customer_list[
-        (customer_list.index != 0) & (customer_list.index.notna())
+        (customer_list.index != 0)
+        & (customer_list.index != "0")
+        & (customer_list.index.notna())
     ]
 
     if Top_100:

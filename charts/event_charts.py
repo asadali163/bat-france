@@ -64,3 +64,57 @@ def plot_customer_events(df):
     )
 
     return fig
+
+
+def plot_customer_events_simple(df):
+    """Sell-in / Sell-out + spike markers — no stock remaining trace."""
+    spikes = df[df["is_spike"]]
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df["sellin"],
+            name="Sell-in",
+            mode="lines+markers",
+            line=dict(color="purple", width=2),
+            marker=dict(size=5),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df["sellout"],
+            name="Sell-out",
+            mode="lines+markers",
+            line=dict(color="orangered", width=2),
+            marker=dict(size=5),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=spikes["date"],
+            y=spikes["sellout"],
+            name="Spike",
+            mode="markers",
+            marker=dict(
+                color="yellow",
+                size=14,
+                symbol="circle",
+                line=dict(color="black", width=1),
+            ),
+        )
+    )
+
+    fig.update_layout(
+        title="Sell-in vs Sell-out with Spikes",
+        xaxis=dict(title="Date"),
+        yaxis=dict(title="Quantity"),
+        hovermode="x unified",
+        legend=dict(orientation="v", x=1.01, y=1),
+        height=400,
+        margin=dict(t=60, b=40),
+    )
+
+    return fig

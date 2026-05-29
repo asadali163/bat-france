@@ -181,6 +181,106 @@ def get_events_for_shop(
     return df
 
 
+SHOP_CATCHMENT_M = 500
+
+
+def _capacity_to_radius(cap) -> int:
+    """Derive event impact radius (metres) from estimated audience capacity."""
+    try:
+        cap = float(cap)
+    except (TypeError, ValueError):
+        return 200
+    if cap != cap:  # NaN
+        return 200
+    if cap < 500:
+        return 200
+    if cap < 2000:
+        return 400
+    if cap < 10_000:
+        return 800
+    return 1500  # large / district-scale events
+
+
+def get_spike_events(
+    df_events: pd.DataFrame,
+    shop_lat: float,
+    shop_lon: float,
+    from_date,
+    to_date,
+) -> pd.DataFrame:
+    """
+    Return events near a shop for the given date window, tagged with:
+      impact_radius_m — derived from estimated_capacity
+      event_type      — "district" | "in_range" | "too_far"
+    """
+    df = df_events[
+        (df_events["shop_lat"].round(4) == shop_lat)
+        & (df_events["shop_lon"].round(4) == shop_lon)
+        & (df_events["date"] >= from_date)
+        & (df_events["date"] <= to_date)
+    ].copy()
+
+    df["impact_radius_m"] = df["estimated_capacity"].apply(_capacity_to_radius)
+
+    def _classify(row):
+        try:
+            cap = float(row["estimated_capacity"])
+        except (TypeError, ValueError):
+            cap = float("nan")
+        if cap == cap and cap >= 10_000:  # not NaN and >= 10k
+            return "district"
+        if row["distance_m"] <= SHOP_CATCHMENT_M + row["impact_radius_m"]:
+            return "in_range"
+        return "too_far"
+
+    df["event_type"] = df.apply(_classify, axis=1)
+    return df
+
+
+def _classify_events(df: pd.DataFrame) -> pd.DataFrame:
+    """Add impact_radius_m and event_type to an already-filtered events df."""
+    if df.empty:
+        df["impact_radius_m"] = pd.Series(dtype=int)
+        df["event_type"] = pd.Series(dtype=str)
+        return df
+
+    df["impact_radius_m"] = df["estimated_capacity"].apply(_capacity_to_radius)
+
+    def _classify(row):
+        try:
+            cap = float(row["estimated_capacity"])
+        except (TypeError, ValueError):
+            cap = float("nan")
+        if cap == cap and cap >= 10_000:
+            return "district"
+        if row["distance_m"] <= SHOP_CATCHMENT_M + row["impact_radius_m"]:
+            return "in_range"
+        return "too_far"
+
+    df["event_type"] = df.apply(_classify, axis=1)
+    return df
+
+
+def get_all_shop_events(
+    df_events: pd.DataFrame,
+    shop_lat: float,
+    shop_lon: float,
+    from_date,
+    to_date,
+) -> pd.DataFrame:
+    """
+    Single scan of df_events for this shop across the full date range.
+    Returns a classified DataFrame; per-spike slicing is done in memory.
+    """
+    df = df_events[
+        (df_events["shop_lat"].round(4) == shop_lat)
+        & (df_events["shop_lon"].round(4) == shop_lon)
+        & (df_events["date"] >= from_date)
+        & (df_events["date"] <= to_date)
+    ].copy()
+    return _classify_events(df)
+
+
 def get_shops_for_event(
     df_events: pd.DataFrame,
     event_name: str,

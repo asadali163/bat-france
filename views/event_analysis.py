@@ -1,16 +1,40 @@
 import streamlit as st
 import pandas as pd
-from streamlit_folium import st_folium
 from services.filters import get_fmc_only, get_customer_list_events
 from charts.event_charts import plot_customer_events
-from charts.event_map import plot_event_map, plot_shops_for_event
+from charts.event_map import plot_event_map
 from services.data_loader import load_events_data
 from services.porcessors import (
     get_events_for_shop,
-    get_shops_for_event,
     events_analysis_processor,
     detect_spikes_global,
 )
+
+
+@st.cache_data(show_spinner=False)
+def _cached_events_for_shop(
+    df_events: pd.DataFrame,
+    shop_lat: float,
+    shop_lon: float,
+    from_date,
+    to_date,
+    distance: int,
+) -> pd.DataFrame:
+    return get_events_for_shop(
+        df_events, shop_lat, shop_lon, from_date, to_date, distance
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _cached_map_html(
+    shop_lat: float,
+    shop_lon: float,
+    customer: str,
+    df_filtered: pd.DataFrame,
+    distance: int,
+) -> str:
+    m = plot_event_map(shop_lat, shop_lon, customer, df_filtered, distance)
+    return m._repr_html_()
 
 
 @st.cache_data(show_spinner=False)
@@ -35,7 +59,7 @@ def render(sellout, sellin):
     # Get Customer List
     col1, col2 = st.columns(2)
     with col1:
-        customer_list = get_customer_list_events(sellout)
+        customer_list = get_customer_list_events(sellout, Top_100=False)
         selected_customer = st.selectbox(
             "Select Customer", customer_list, key="customer_event"
         )
@@ -49,10 +73,44 @@ def render(sellout, sellin):
             st.session_state["prev_customer_event"] = selected_customer
     with col2:
         threshold = st.slider("Spike Threshold (z-score)", 0.0, 5.0, 2.0, step=0.1)
+        st.caption(
+            "A **spike** is a day where sell-out is abnormally high vs the same "
+            "weekday's historical average. The z-score measures how many standard "
+            "deviations above that weekday average the day's sales are. "
+            "Yellow circles on the chart mark spike days."
+        )
 
     sellin_cust = sellin[sellin["customer_code"] == selected_customer]
     sellout_cust = sellout[sellout["customer_code"] == selected_customer]
-    # print("Customer Lat and Lon is : ", sellout_cust[["latitude", "longitude"]].head(1))
+
+    # ── Date range filter (single widget, one rerun) ──────────────────────────
+    min_date = sellout_cust["date"].min().date()
+    max_date = sellout_cust["date"].max().date()
+
+    date_range = st.date_input(
+        "Date range",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+        key="event_date_range",
+    )
+
+    # Wait until user has picked both dates before filtering
+    if len(date_range) < 2:
+        st.info("Please select an end date to continue.")
+        st.stop()
+
+    from_date_filter, to_date_filter = date_range
+
+    sellin_cust = sellin_cust[
+        (sellin_cust["date"].dt.date >= from_date_filter)
+        & (sellin_cust["date"].dt.date <= to_date_filter)
+    ]
+    sellout_cust = sellout_cust[
+        (sellout_cust["date"].dt.date >= from_date_filter)
+        & (sellout_cust["date"].dt.date <= to_date_filter)
+    ]
+
     df_events_chart = _prepare_events_df(sellin_cust, sellout_cust, threshold)
     fig = _cached_events_chart(df_events_chart)
 
@@ -72,13 +130,52 @@ def render(sellout, sellin):
 
     if selected_date:
         st.markdown("-----")
+
+        # ── Show spike details for this date ─────────────────────────────────
+        selected_date_ts = pd.to_datetime(selected_date)
+        row = df_events_chart[df_events_chart["date"] == selected_date_ts]
+
+        if not row.empty:
+            r = row.iloc[0]
+            weekday_name = selected_date_ts.day_name()
+            is_spike = bool(r["is_spike"])
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Sell-out", f"{r['sellout']:,.0f}")
+            c2.metric(
+                f"Avg {weekday_name}",
+                f"{r['weekday_mean']:,.0f}",
+                delta=f"{(r['sellout'] - r['weekday_mean']):+,.0f}",
+            )
+            c3.metric(
+                "z-score", f"{r['z_score']:.2f}", delta=f"threshold: {threshold:.1f}"
+            )
+            c4.metric("Spike?", "🔴 Yes" if is_spike else "⚪ No")
+
+            if is_spike:
+                multiplier = (
+                    r["sellout"] / r["weekday_mean"] if r["weekday_mean"] else 0
+                )
+                st.success(
+                    f"**This {weekday_name} ({selected_date_ts.date()}) is flagged as a spike.** "
+                    f"Sell-out was **{r['sellout']:,.0f}**, which is "
+                    f"**{r['z_score']:.1f} standard deviations** above the typical {weekday_name} "
+                    f"average of **{r['weekday_mean']:,.0f}** "
+                    f"({multiplier:.1f}× the weekday average)."
+                )
+            else:
+                st.info(
+                    f"This day's z-score ({r['z_score']:.2f}) is below the spike threshold ({threshold:.1f}), "
+                    f"so it isn't flagged as a spike — but you can still explore nearby events."
+                )
+
+        # ── Distance slider + map ────────────────────────────────────────────
         col1, col2 = st.columns(2)
 
         with col1:
-            distance = st.slider("Distance (m)", 0, 3000, 100)
-            selected_date = pd.to_datetime(selected_date)
-            from_date = selected_date - pd.Timedelta(days=1)
-            to_date = selected_date + pd.Timedelta(days=1)
+            distance = st.slider("Distance (m)", 0, 3000, 1000)
+            from_date = selected_date_ts - pd.Timedelta(days=1)
+            to_date = selected_date_ts + pd.Timedelta(days=1)
 
         with col2:
             st.write(f"Selected Customer: {selected_customer}")
@@ -88,49 +185,74 @@ def render(sellout, sellin):
         ].iloc[0]
         shop_lat, shop_lon = shop["latitude"], shop["longitude"]
 
-        df_filtered_events = get_events_for_shop(
+        df_filtered_events = _cached_events_for_shop(
             df_events, shop_lat, shop_lon, from_date, to_date, distance
         )
 
-        m = plot_event_map(
+        map_html = _cached_map_html(
             shop_lat, shop_lon, selected_customer, df_filtered_events, distance
         )
-        select_event = st_folium(
-            m, use_container_width=True, height=500, key="shop_map"
-        )
+        st.components.v1.html(map_html, height=500)
 
-        # if select_event.get("last_object_clicked_tooltip"):
-        #     event_name = select_event["last_object_clicked_tooltip"]
-        #     clicked = select_event["last_object_clicked"]
-        #     if event_name != st.session_state.get("prev_event_name"):
-        #         st.session_state["selected_event_name"] = event_name
-        #         st.session_state["selected_event_lat"] = clicked["lat"]
-        #         st.session_state["selected_event_lon"] = clicked["lng"]
-        #         st.session_state["prev_event_name"] = event_name
+    # if selected_date:
+    #     st.markdown("-----")
+    #     col1, col2 = st.columns(2)
 
-        # selected_event_name = st.session_state.get("selected_event_name")
+    #     with col1:
+    #         distance = st.slider("Distance (m)", 0, 3000, 1000)
+    #         selected_date = pd.to_datetime(selected_date)
+    #         from_date = selected_date - pd.Timedelta(days=1)
+    #         to_date = selected_date + pd.Timedelta(days=1)
 
-        # if selected_event_name:
-        #     st.markdown("-----")
-        #     c1, c2 = st.columns(2)
+    #     with col2:
+    #         st.write(f"Selected Customer: {selected_customer}")
 
-        #     with c1:
-        #         dist_from_event = st.slider("Distance from Event (m)", 0, 1000, 100)
-        #     with c2:
-        #         st.write(f"Selected Event: {selected_event_name}")
+    #     shop = sellout[sellout["customer_code"] == selected_customer][
+    #         ["latitude", "longitude"]
+    #     ].iloc[0]
+    #     shop_lat, shop_lon = shop["latitude"], shop["longitude"]
 
-        #     event_lat = st.session_state["selected_event_lat"]
-        #     event_lon = st.session_state["selected_event_lon"]
+    #     df_filtered_events = _cached_events_for_shop(
+    #         df_events, shop_lat, shop_lon, from_date, to_date, distance
+    #     )
 
-        #     df_shops = get_shops_for_event(
-        #         df_events, selected_event_name, max_distance_m=dist_from_event
-        #     )
+    #     map_html = _cached_map_html(
+    #         shop_lat, shop_lon, selected_customer, df_filtered_events, distance
+    #     )
+    #     st.components.v1.html(map_html, height=500)
 
-        #     m2 = plot_shops_for_event(
-        #         selected_event_name,
-        #         event_lat,
-        #         event_lon,
-        #         df_shops,
-        #         max_distance_m=dist_from_event,
-        #     )
-        #     st_folium(m2, use_container_width=True, height=500, key="event_map")
+    # if select_event.get("last_object_clicked_tooltip"):
+    #     event_name = select_event["last_object_clicked_tooltip"]
+    #     clicked = select_event["last_object_clicked"]
+    #     if event_name != st.session_state.get("prev_event_name"):
+    #         st.session_state["selected_event_name"] = event_name
+    #         st.session_state["selected_event_lat"] = clicked["lat"]
+    #         st.session_state["selected_event_lon"] = clicked["lng"]
+    #         st.session_state["prev_event_name"] = event_name
+
+    # selected_event_name = st.session_state.get("selected_event_name")
+
+    # if selected_event_name:
+    #     st.markdown("-----")
+    #     c1, c2 = st.columns(2)
+
+    #     with c1:
+    #         dist_from_event = st.slider("Distance from Event (m)", 0, 1000, 100)
+    #     with c2:
+    #         st.write(f"Selected Event: {selected_event_name}")
+
+    #     event_lat = st.session_state["selected_event_lat"]
+    #     event_lon = st.session_state["selected_event_lon"]
+
+    #     df_shops = get_shops_for_event(
+    #         df_events, selected_event_name, max_distance_m=dist_from_event
+    #     )
+
+    #     m2 = plot_shops_for_event(
+    #         selected_event_name,
+    #         event_lat,
+    #         event_lon,
+    #         df_shops,
+    #         max_distance_m=dist_from_event,
+    #     )
+    #     st_folium(m2, use_container_width=True, height=500, key="event_map")

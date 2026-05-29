@@ -1,5 +1,5 @@
 import streamlit as st
-from views import weather_analysis, event_analysis, forecasting
+from views import weather_analysis, event_analysis, event_analysis2, forecasting
 from services.data_loader import load_sell_data
 
 st.set_page_config(
@@ -19,20 +19,21 @@ def main():
         f"SKUs: **{sellin['sku_code'].nunique()}**"
     )
 
-    tab_analysis, events_analysis, forecasting_analysis = st.tabs(
-        ["Weather Analysis", "Event Analysis", "Forecasting"]
+    tab_analysis, tab_events, tab_events2, tab_forecasting = st.tabs(
+        ["Weather Analysis", "Event Analysis", "Event Analysis 2", "Forecasting"]
     )
 
     with tab_analysis:
         weather_analysis.render(sellout=sellout, sellin=sellin)
 
-    with events_analysis:
-        pass
-        # event_analysis.render(sellout=sellout, sellin=sellin)
+    with tab_events:
+        event_analysis.render(sellout=sellout, sellin=sellin)
 
-    with forecasting_analysis:
+    with tab_events2:
+        event_analysis2.render(sellout=sellout, sellin=sellin)
+
+    with tab_forecasting:
         pass
-        # forecasting.render(sellout, sellin)
 
 
 if __name__ == "__main__":
