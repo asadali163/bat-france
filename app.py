@@ -19,21 +19,23 @@ def main():
         f"SKUs: **{sellin['sku_code'].nunique()}**"
     )
 
-    tab_analysis, tab_events, tab_events2, tab_forecasting = st.tabs(
-        ["Weather Analysis", "Event Analysis", "Event Analysis 2", "Forecasting"]
-    )
+    # tab_analysis, tab_events, tab_events2, tab_forecasting = st.tabs(
+    #     ["Weather Analysis", "Event Analysis 2", "Event Analysis", "Forecasting"]
+    # )
+
+    tab_analysis, tab_events2 = st.tabs(["Weather Analysis", "Event Analysis"])
 
     with tab_analysis:
         weather_analysis.render(sellout=sellout, sellin=sellin)
 
-    with tab_events:
-        event_analysis.render(sellout=sellout, sellin=sellin)
+    # with tab_events:
+    #     event_analysis.render(sellout=sellout, sellin=sellin)
 
     with tab_events2:
         event_analysis2.render(sellout=sellout, sellin=sellin)
 
-    with tab_forecasting:
-        pass
+    # with tab_forecasting:
+    #     pass
 
 
 if __name__ == "__main__":

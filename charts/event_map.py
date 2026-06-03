@@ -143,13 +143,14 @@ def plot_event_map_v2(shop_lat, shop_lon, shop_name, df_events):
             f"&#128205; {row['venue']}<br>"
             f"&#128101; Capacity: {cap_str}<br>"
             f"&#128207; {int(row['distance_m'])} m away<br>"
-            f"&#127919; Impact radius: {int(row['impact_radius_m'])} m<br>"
+            f"&#127919; Impact radius: {800 if row.get('source') == 'df_e_r' else int(row['impact_radius_m'])} m<br>"
             f"<i>{row.get('event_type','').replace('_',' ').title()}</i>"
         )
         if row.get("event_type") in ("in_range", "district"):
+            circle_radius = 800 if row.get("source") == "df_e_r" else int(row["impact_radius_m"])
             folium.Circle(
                 location=[row["venue_lat"], row["venue_lon"]],
-                radius=int(row["impact_radius_m"]),
+                radius=circle_radius,
                 color=evt_color,
                 fill=True,
                 fill_opacity=0.10,

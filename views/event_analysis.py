@@ -9,6 +9,7 @@ from services.porcessors import (
     events_analysis_processor,
     detect_spikes_global,
 )
+from views import spike_summary
 
 
 @st.cache_data(show_spinner=False)
@@ -52,6 +53,14 @@ def _cached_events_chart(df: pd.DataFrame):
 
 def render(sellout, sellin):
     df_events = load_events_data()
+
+    st.markdown("### High-Level Overview")
+    st.caption("Spike cause distribution across all customers and all years.")
+    spike_summary.render(sellout, df_events, key="spike_cause_ea1")
+
+    st.markdown("---")
+    st.markdown("### Customer-Level Analysis")
+    st.caption("Drill down into a specific customer to explore individual spike dates and nearby events.")
 
     # sellin = get_fmc_only(sellin)
     # sellout = get_fmc_only(sellout)

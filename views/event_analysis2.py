@@ -11,16 +11,29 @@ from services.porcessors import (
 )
 from charts.event_charts import plot_customer_events_simple
 from charts.event_map import plot_event_map_v2
+from views import spike_summary
+
+# Days before/after a spike to search for nearby events (change here to adjust)
+EVENT_WINDOW_DAYS = 1
 
 
 def _round_half_up(value: float) -> float:
-    return float(Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
+    return float(
+        Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    )
 
 
 @st.cache_data(show_spinner=False)
-def _prepare_df(sellin_cust, sellout_cust, threshold):
+def _prepare_df(sellin_cust, sellout_cust, threshold, sellout_full_cust):
     df = events_analysis_processor(sellin_cust, sellout_cust)
-    return detect_spikes_global(df, threshold)
+    # Build weekday baseline from full history so the z-score isn't affected by date filter
+    ref = (
+        sellout_full_cust.groupby("date")["sales_quantity"]
+        .sum()
+        .reset_index()
+        .rename(columns={"sales_quantity": "sellout"})
+    )
+    return detect_spikes_global(df, threshold, reference_df=ref)
 
 
 @st.cache_data(show_spinner=False)
@@ -36,11 +49,9 @@ def _cached_all_shop_events(df_events, shop_lat, shop_lon, full_from, full_to):
 
 def _events_for_spike(all_events_df, spike_dt):
     """In-memory date slice — no DataFrame scan, microseconds."""
-    lo = spike_dt - pd.Timedelta(days=1)
-    hi = spike_dt + pd.Timedelta(days=1)
-    return all_events_df[
-        (all_events_df["date"] >= lo) & (all_events_df["date"] <= hi)
-    ]
+    lo = spike_dt - pd.Timedelta(days=EVENT_WINDOW_DAYS)
+    hi = spike_dt + pd.Timedelta(days=EVENT_WINDOW_DAYS)
+    return all_events_df[(all_events_df["date"] >= lo) & (all_events_df["date"] <= hi)]
 
 
 def _build_spike_infos(spikes, all_events_df):
@@ -49,26 +60,16 @@ def _build_spike_infos(spikes, all_events_df):
         spike_dt = pd.Timestamp(row["date"])
         df_ev = _events_for_spike(all_events_df, spike_dt)
         active = df_ev[df_ev["event_type"].isin(["in_range", "district"])]
-        infos.append({
-            "date": spike_dt,
-            "sellout": int(row["sellout"]),
-            "z_score": float(row["z_score"]),
-            "weekday_mean": float(row.get("weekday_mean", 0) or 0),
-            "top_event": active["name"].iloc[0] if not active.empty else None,
-        })
+        infos.append(
+            {
+                "date": spike_dt,
+                "sellout": int(row["sellout"]),
+                "z_score": float(row["z_score"]),
+                "weekday_mean": float(row.get("weekday_mean", 0) or 0),
+                "top_event": active["name"].iloc[0] if not active.empty else None,
+            }
+        )
     return infos
-
-
-def _build_all_maps(spike_infos, all_events_df, shop_lat_raw, shop_lon_raw, customer):
-    """Generate Folium HTML for every spike in one pass — stored in session_state."""
-    maps = {}
-    for info in spike_infos:
-        date_key = str(info["date"].date())
-        df_ev = _events_for_spike(all_events_df, info["date"])
-        maps[date_key] = plot_event_map_v2(
-            shop_lat_raw, shop_lon_raw, customer, df_ev
-        )._repr_html_()
-    return maps
 
 
 # ── Card rendering ────────────────────────────────────────────────────────────
@@ -94,7 +95,8 @@ def _card_html(info, is_selected):
 
     event_part = (
         f"<br><span style='font-size:10px;opacity:0.85'>{_truncate(info['top_event'])}</span>"
-        if has_event else ""
+        if has_event
+        else ""
     )
     return (
         f"<div style='background:{bg};border:{border};border-radius:8px;"
@@ -107,24 +109,41 @@ def _card_html(info, is_selected):
     )
 
 
+def _set_selected_date(date_key):
+    st.session_state["ea2_selected_date"] = date_key
+
+
 def _render_spike_cards(spike_infos, selected_date_str):
     for row_start in range(0, len(spike_infos), CARDS_PER_ROW):
-        row = spike_infos[row_start: row_start + CARDS_PER_ROW]
+        row = spike_infos[row_start : row_start + CARDS_PER_ROW]
         cols = st.columns(len(row))
         for col, info in zip(cols, row):
             date_key = str(info["date"].date())
             with col:
-                # st.html renders raw HTML without markdown sanitisation — no stray </div>
                 st.html(_card_html(info, selected_date_str == date_key))
-                if st.button("Select", key=f"ea2_spike_{date_key}"):
-                    st.session_state["ea2_selected_date"] = date_key
-                    st.rerun()
+                st.button(
+                    "Select",
+                    key=f"ea2_spike_{date_key}",
+                    on_click=_set_selected_date,
+                    args=(date_key,),
+                )
 
 
 # ── Main render ───────────────────────────────────────────────────────────────
 
+
 def render(sellout, sellin):
     df_events = load_events_data()
+
+    st.markdown("### High-Level Overview")
+    st.caption("Spike cause distribution across all customers and all years.")
+    spike_summary.render(sellout, df_events, key="spike_cause_ea2")
+
+    st.markdown("---")
+    st.markdown("### Customer-Level Analysis")
+    st.caption(
+        "Drill down into a specific customer to explore individual spike dates and nearby events."
+    )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -148,6 +167,7 @@ def render(sellout, sellin):
 
     sellin_cust = sellin[sellin["customer_code"] == selected_customer]
     sellout_cust = sellout[sellout["customer_code"] == selected_customer]
+    sellout_cust_full = sellout_cust.copy()  # full history — used for weekday baseline
 
     min_date = sellout_cust["date"].min().date()
     max_date = sellout_cust["date"].max().date()
@@ -165,15 +185,15 @@ def render(sellout, sellin):
 
     from_date_filter, to_date_filter = date_range
     sellin_cust = sellin_cust[
-        (sellin_cust["date"].dt.date >= from_date_filter) &
-        (sellin_cust["date"].dt.date <= to_date_filter)
+        (sellin_cust["date"].dt.date >= from_date_filter)
+        & (sellin_cust["date"].dt.date <= to_date_filter)
     ]
     sellout_cust = sellout_cust[
-        (sellout_cust["date"].dt.date >= from_date_filter) &
-        (sellout_cust["date"].dt.date <= to_date_filter)
+        (sellout_cust["date"].dt.date >= from_date_filter)
+        & (sellout_cust["date"].dt.date <= to_date_filter)
     ]
 
-    df = _prepare_df(sellin_cust, sellout_cust, threshold)
+    df = _prepare_df(sellin_cust, sellout_cust, threshold, sellout_cust_full)
     fig = _cached_chart(df)
     st.plotly_chart(fig, use_container_width=True)
 
@@ -191,26 +211,34 @@ def render(sellout, sellin):
     shop_lat = _round_half_up(shop_lat_raw)
     shop_lon = _round_half_up(shop_lon_raw)
 
-    # ── Pre-compute all spike maps once; rebuild only when settings change ────
-    map_cache_key = (selected_customer, threshold, from_date_filter, to_date_filter)
+    # ── Load spike event data once; maps built lazily per clicked date ───────
+    map_cache_key = (
+        selected_customer,
+        threshold,
+        from_date_filter,
+        to_date_filter,
+        EVENT_WINDOW_DAYS,
+    )
 
     if st.session_state.get("ea2_map_cache_key") != map_cache_key:
-        full_from = pd.Timestamp(spikes["date"].min()) - pd.Timedelta(days=1)
-        full_to = pd.Timestamp(spikes["date"].max()) + pd.Timedelta(days=1)
+        full_from = pd.Timestamp(spikes["date"].min()) - pd.Timedelta(
+            days=EVENT_WINDOW_DAYS
+        )
+        full_to = pd.Timestamp(spikes["date"].max()) + pd.Timedelta(
+            days=EVENT_WINDOW_DAYS
+        )
 
-        with st.spinner("Loading spike events and building maps…"):
+        with st.spinner("Loading spike event data…"):
             all_shop_events = _cached_all_shop_events(
                 df_events, shop_lat, shop_lon, full_from, full_to
             )
             spike_infos = _build_spike_infos(spikes, all_shop_events)
-            maps = _build_all_maps(
-                spike_infos, all_shop_events, shop_lat_raw, shop_lon_raw, selected_customer
-            )
 
         st.session_state["ea2_map_cache_key"] = map_cache_key
         st.session_state["ea2_spike_infos"] = spike_infos
-        st.session_state["ea2_maps"] = maps
+        st.session_state["ea2_maps"] = {}  # filled lazily on click
         st.session_state["ea2_all_events"] = all_shop_events
+        st.session_state["ea2_selected_date"] = None  # reset selection on new settings
 
     spike_infos = st.session_state["ea2_spike_infos"]
     maps = st.session_state["ea2_maps"]
@@ -235,10 +263,13 @@ def render(sellout, sellin):
         excess = int(sr["sellout"]) - weekday_avg
         z = float(sr["z_score"])
         df_ev = _events_for_spike(all_shop_events, spike_dt)
-        active_names = df_ev[df_ev["event_type"].isin(["in_range", "district"])]["name"].unique()
+        active_names = df_ev[df_ev["event_type"].isin(["in_range", "district"])][
+            "name"
+        ].unique()
         events_html = (
             ", ".join(f"<b>{n}</b>" for n in active_names)
-            if len(active_names) else "<i>None detected</i>"
+            if len(active_names)
+            else "<i>None detected</i>"
         )
 
         st.markdown("---")
@@ -260,9 +291,13 @@ def render(sellout, sellin):
             unsafe_allow_html=True,
         )
 
-    # Map HTML is already built — instant render
-    map_html = maps.get(selected_date_str, "")
-    if map_html:
-        st.components.v1.html(map_html, height=520)
-    else:
-        st.info("No map available for this date.")
+    # Build map for this date on demand; cache so revisiting is instant
+    if selected_date_str not in maps:
+        spike_dt_map = pd.Timestamp(selected_date_str)
+        df_ev_map = _events_for_spike(all_shop_events, spike_dt_map)
+        maps[selected_date_str] = plot_event_map_v2(
+            shop_lat_raw, shop_lon_raw, selected_customer, df_ev_map
+        )._repr_html_()
+        st.session_state["ea2_maps"] = maps
+
+    st.components.v1.html(maps[selected_date_str], height=520)

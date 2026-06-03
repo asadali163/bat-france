@@ -1,6 +1,6 @@
 # SELL_DATA    = "./data/parquet/combined_df.parquet"
 SELL_DATA = "./data/parquet/combined_df2.parquet"
 # WEATHER_CSV = "./data/parquet/weather_till_march2.parquet"
-WEATHER_CSV = "./data/parquet/weather_till_march2_2.parquet"
+WEATHER_CSV = "./data/parquet/weather_till_march2_3.parquet"
 # EVENTS_DATA = "./data/parquet/events_batch2.parquet"
 EVENTS_DATA = "./data/parquet/events_batch4.parquet"

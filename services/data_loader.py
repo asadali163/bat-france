@@ -1,6 +1,9 @@
+import glob
 import pandas as pd
 import streamlit as st
 from config import SELL_DATA, WEATHER_CSV, EVENTS_DATA
+
+HOURLY_WEATHER_DIR = "./data/raw/hourly_weather"
 
 
 def wrangle(df: pd.DataFrame) -> pd.DataFrame:
@@ -43,7 +46,7 @@ def load_sell_data():
         & (df["sku_code"].astype(str).str.strip() != "0")
     ].copy()
     df_sellout = df_sellout[df_sellout["customer_code"] != 0].copy()
-    df_sellout["category"] = df_sellout["category"].fillna("FMC")
+    # df_sellout["category"] = df_sellout["category"].fillna("FMC")
     # df_sellin = df_sellin[df_sellin["category"] == "FMC"].copy()
     # df_sellout = df_sellout[df_sellout["category"] == "FMC"].copy()
     return df_sellin, df_sellout
@@ -53,6 +56,18 @@ def load_sell_data():
 def load_weather_data() -> pd.DataFrame:
     df = pd.read_parquet(WEATHER_CSV)
     df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y-%m-%d")
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def load_hourly_weather_data() -> pd.DataFrame:
+    files = glob.glob(f"{HOURLY_WEATHER_DIR}/*.parquet")
+    if not files:
+        return pd.DataFrame()
+    df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    df["date"] = df["time"].dt.date
+    df["latitude"] = df["latitude"].round(4)
+    df["longitude"] = df["longitude"].round(4)
     return df
 
 
