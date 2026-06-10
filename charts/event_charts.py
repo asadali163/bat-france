@@ -1,5 +1,8 @@
 import plotly.graph_objects as go
 import plotly.express as px
+import calendar
+import datetime
+import numpy as np
 
 
 def plot_customer_events(df):
@@ -311,31 +314,51 @@ def plot_route_spike_bands(band_df, title):
     return fig
 
 
-def plot_no_event_daily(daily_df, year: int, month: int, month_name: str, route=None):
-    """Bar chart: no-event spike count per day for a given year+month (and optional route)."""
-    import calendar
+def plot_no_event_daily(
+    daily_df, year: int, month_label: str, route_label: str = "", n_shops: int = 0, months=None
+):
+    """Bar chart: no-event spikes per day (x=day, y=shops spiking).
+    months: tuple of ints — used for day-range trimming and weekend coloring (single month only).
+    """
+    if months is None:
+        months = ()
 
-    route_label = f" — Territory {route}" if route else ""
-    n_total = int(daily_df["count"].sum())
+    # Trim to the longest month in the selection (avoids phantom day-31 bars for short months)
+    if months:
+        max_day = max(calendar.monthrange(year, m)[1] for m in months)
+    else:
+        max_day = 31
+    daily_df = daily_df[daily_df["day"] <= max_day].copy()
+
+    # Weekend coloring only makes sense for a single-month selection
+    single_month = months[0] if len(months) == 1 else None
+    if single_month is not None:
+        colors = [
+            "#e67e22"
+            if datetime.date(year, single_month, d).weekday() >= 5
+            else "#5b9bd5"
+            for d in daily_df["day"]
+        ]
+        legend_text = (
+            "<span style='color:#5b9bd5'>■ Weekday</span>  "
+            "<span style='color:#e67e22'>■ Weekend</span>"
+        )
+    else:
+        colors = ["#5b9bd5"] * len(daily_df)
+        legend_text = "<span style='color:#5b9bd5'>■ No-Event Spike</span>"
+
     title = (
-        f"No-Event Spikes per Day: {month_name} {year}{route_label}  "
-        f"<sub>(total: {n_total:,})</sub>"
+        f"No-Event Spikes per Day: {month_label} {year}{route_label}  "
+        f"<sub>(total: {n_shops:,} shops)</sub>"
     )
 
-    # Keep only days that exist in that month (drop trailing zeros beyond month end)
-    days_in_month = calendar.monthrange(year, month)[1]
-    daily_df = daily_df[daily_df["day"] <= days_in_month].copy()
-
-    # Colour weekends differently
-    import datetime
-
-    def _is_weekend(day):
-        try:
-            return datetime.date(year, month, day).weekday() >= 5
-        except ValueError:
-            return False
-
-    colors = ["#e67e22" if _is_weekend(d) else "#5b9bd5" for d in daily_df["day"]]
+    def _bar_label(v):
+        if v <= 0:
+            return ""
+        if n_shops > 0:
+            pct = 100 * v / n_shops
+            return f"{v}<br>{pct:.0f}%"
+        return str(v)
 
     fig = go.Figure()
     fig.add_trace(
@@ -343,9 +366,9 @@ def plot_no_event_daily(daily_df, year: int, month: int, month_name: str, route=
             x=daily_df["day"].astype(str),
             y=daily_df["count"],
             marker_color=colors,
-            text=daily_df["count"].apply(lambda v: str(v) if v > 0 else ""),
+            text=daily_df["count"].apply(_bar_label),
             textposition="outside",
-            hovertemplate="<b>Day %{x}</b><br>No-event spikes: %{y}<extra></extra>",
+            hovertemplate="<b>Day %{x}</b><br>Shops with a spike: %{y}<extra></extra>",
         )
     )
 
@@ -363,7 +386,7 @@ def plot_no_event_daily(daily_df, year: int, month: int, month_name: str, route=
         title=dict(text=title, x=0.0, xanchor="left"),
         xaxis=dict(title="Day of Month", type="category"),
         yaxis=dict(
-            title="No-Event Spike Count",
+            title="Spike in No of Shops",
             rangemode="tozero",
             showgrid=True,
             gridcolor="#f0f0f0",
@@ -374,15 +397,134 @@ def plot_no_event_daily(daily_df, year: int, month: int, month_name: str, route=
         margin=dict(t=70, b=50, l=60, r=30),
         annotations=[
             dict(
-                x=0.01,
+                x=0.99,
                 y=1.08,
                 xref="paper",
                 yref="paper",
+                xanchor="right",
                 showarrow=False,
-                text="<span style='color:#5b9bd5'>■ Weekday</span>  "
-                "<span style='color:#e67e22'>■ Weekend</span>",
+                text=legend_text,
                 font=dict(size=11),
             )
         ],
+    )
+    return fig
+
+
+_MB_COLORS = {
+    "normal":         "#b0bec5",
+    "spike_event":    "#6c3fc7",
+    "spike_no_event": "#e74c3c",
+}
+
+
+def plot_monthly_sales_bars(daily_df, title):
+    """
+    Bar chart coloured by spike type. Click a bar to see event details.
+    daily_df columns: date, sellout, bar_type, event_name, z_score, weekday_mean.
+    """
+    daily_df = daily_df.sort_values("date").reset_index(drop=True)
+    colors = [_MB_COLORS[t] for t in daily_df["bar_type"]]
+
+    fig = go.Figure()
+
+    # Weekday baseline — dotted reference line
+    if "weekday_mean" in daily_df.columns and daily_df["weekday_mean"].notna().any():
+        fig.add_trace(go.Scatter(
+            x=daily_df["date"], y=daily_df["weekday_mean"],
+            mode="lines", name="Weekday avg",
+            line=dict(color="#999", width=1.5, dash="dot"),
+            hovertemplate="%{y:,.0f}<extra>Weekday avg</extra>",
+        ))
+
+    # Daily sales bars — customdata carries the date string for click lookup
+    fig.add_trace(go.Bar(
+        x=daily_df["date"], y=daily_df["sellout"],
+        marker_color=colors, name="Sales",
+        customdata=daily_df["date"].astype(str).values,
+        hovertemplate="<b>%{x|%d %b %a}</b><br>Sales: %{y:,}<extra></extra>",
+        showlegend=False,
+    ))
+
+    # Spike annotations (callout boxes)
+    for _, row in daily_df[daily_df["bar_type"] != "normal"].iterrows():
+        ev_name = row.get("event_name")
+        z_val   = float(row.get("z_score") or 0)
+        label   = (ev_name[:22] + "…") if ev_name and len(str(ev_name)) > 22 else (ev_name or f"z={z_val:.1f}")
+        bg      = "#4a235a" if row["bar_type"] == "spike_event" else "#922b21"
+        fig.add_annotation(
+            x=row["date"], y=row["sellout"],
+            text=f"<b>{int(row['sellout']):,}</b><br>{label}",
+            showarrow=True, arrowhead=2, arrowcolor="#aaa",
+            bgcolor=bg, font=dict(color="white", size=10),
+            bordercolor="#ccc", borderwidth=1, ax=0, ay=-55,
+        )
+
+    # Legend proxies
+    fig.add_trace(go.Bar(x=[None], y=[None], name="Event spike",      marker_color="#6c3fc7"))
+    fig.add_trace(go.Bar(x=[None], y=[None], name="Unexplained spike", marker_color="#e74c3c"))
+    fig.add_trace(go.Bar(x=[None], y=[None], name="Normal",            marker_color="#b0bec5"))
+
+    fig.update_layout(
+        title=dict(text=title, x=0.0, xanchor="left"),
+        xaxis=dict(title="", tickformat="%d %b", dtick=86400000),
+        yaxis=dict(title="Sales", showgrid=True, gridcolor="#f0f0f0"),
+        template="plotly_white",
+        height=420,
+        hovermode="x unified",
+        legend=dict(orientation="h", y=1.10, x=0),
+        margin=dict(t=110, b=50, l=70, r=30),
+        bargap=0.25,
+        clickmode="event+select",
+    )
+    return fig
+
+
+def plot_monthly_sales_line(daily_df, title):
+    """
+    Sell-out trend line + yellow spike markers — companion to the bar chart.
+    daily_df columns: date, sellout, bar_type, weekday_mean.
+    """
+    daily_df = daily_df.sort_values("date").reset_index(drop=True)
+
+    fig = go.Figure()
+
+    # Weekday baseline — dotted reference line
+    if "weekday_mean" in daily_df.columns and daily_df["weekday_mean"].notna().any():
+        fig.add_trace(go.Scatter(
+            x=daily_df["date"], y=daily_df["weekday_mean"],
+            mode="lines", name="Weekday avg",
+            line=dict(color="#999", width=1.5, dash="dot"),
+            hovertemplate="%{y:,.0f}<extra>Weekday avg</extra>",
+        ))
+
+    # Sell-out line
+    fig.add_trace(go.Scatter(
+        x=daily_df["date"], y=daily_df["sellout"],
+        mode="lines", name="Sell-out",
+        line=dict(color="#e74c3c", width=2),
+        hovertemplate="<b>%{x|%d %b %a}</b><br>Sales: %{y:,}<extra>Sell-out</extra>",
+    ))
+
+    # Yellow spike markers
+    spike_rows = daily_df[daily_df["bar_type"] != "normal"]
+    if not spike_rows.empty:
+        fig.add_trace(go.Scatter(
+            x=spike_rows["date"], y=spike_rows["sellout"],
+            mode="markers", name="Spike",
+            marker=dict(color="yellow", size=14, symbol="circle",
+                        line=dict(color="black", width=1.5)),
+            hovertemplate="<b>%{x|%d %b}</b><br>Spike: %{y:,}<extra></extra>",
+        ))
+
+    fig.update_layout(
+        title=dict(text=title, x=0.0, xanchor="left"),
+        xaxis=dict(title="", tickformat="%d %b", dtick=86400000),
+        yaxis=dict(title="Sales", showgrid=True, gridcolor="#f0f0f0"),
+        template="plotly_white",
+        height=300,
+        hovermode="x unified",
+        legend=dict(orientation="h", y=1.14, x=0),
+        margin=dict(t=60, b=50, l=70, r=30),
     )
     return fig

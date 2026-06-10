@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import calendar as _cal
 from decimal import Decimal, ROUND_HALF_UP
 
 from services.filters import get_customer_list_events
@@ -9,12 +10,14 @@ from services.porcessors import (
     detect_spikes_global,
     get_all_shop_events,
 )
-from charts.event_charts import plot_customer_events_simple
+from charts.event_charts import (
+    plot_customer_events_simple,
+    plot_monthly_sales_bars,
+    plot_monthly_sales_line,
+)
 from charts.event_map import plot_event_map_v2
 from views import spike_summary
 
-# Days before/after a spike to search for nearby events (change here to adjust)
-EVENT_WINDOW_DAYS = 1
 
 
 def _round_half_up(value: float) -> float:
@@ -47,29 +50,67 @@ def _cached_all_shop_events(df_events, shop_lat, shop_lon, full_from, full_to):
     return get_all_shop_events(df_events, shop_lat, shop_lon, full_from, full_to)
 
 
-def _events_for_spike(all_events_df, spike_dt):
+def _events_for_spike(all_events_df, spike_dt, days_before=1, days_after=1):
     """In-memory date slice — no DataFrame scan, microseconds."""
-    lo = spike_dt - pd.Timedelta(days=EVENT_WINDOW_DAYS)
-    hi = spike_dt + pd.Timedelta(days=EVENT_WINDOW_DAYS)
+    lo = spike_dt - pd.Timedelta(days=days_before)
+    hi = spike_dt + pd.Timedelta(days=days_after)
     return all_events_df[(all_events_df["date"] >= lo) & (all_events_df["date"] <= hi)]
 
 
-def _build_spike_infos(spikes, all_events_df):
+def _build_spike_infos(spikes, all_events_df, days_before=1, days_after=1):
     infos = []
     for _, row in spikes.iterrows():
         spike_dt = pd.Timestamp(row["date"])
-        df_ev = _events_for_spike(all_events_df, spike_dt)
-        active = df_ev[df_ev["event_type"].isin(["in_range", "district"])]
+        df_ev = _events_for_spike(all_events_df, spike_dt, days_before, days_after)
+        # Prefer in_range/district for top_event label, but fall back to any event
+        # (too_far events are still real events visible on the map — card should be purple)
+        preferred = df_ev[df_ev["event_type"].isin(["in_range", "district"])]
+        top_source = preferred if not preferred.empty else df_ev
         infos.append(
             {
                 "date": spike_dt,
                 "sellout": int(row["sellout"]),
                 "z_score": float(row["z_score"]),
                 "weekday_mean": float(row.get("weekday_mean", 0) or 0),
-                "top_event": active["name"].iloc[0] if not active.empty else None,
+                "top_event": top_source["name"].iloc[0] if not top_source.empty else None,
             }
         )
     return infos
+
+
+@st.cache_data(show_spinner=False)
+def _get_sorted_customers(sellout, df_events, threshold):
+    """Customer list sorted by same-day event spike count (desc)."""
+    from services.porcessors import compute_spike_cause_distribution
+    _, spike_df = compute_spike_cause_distribution(sellout, df_events, threshold=threshold)
+    event_counts = (
+        spike_df[spike_df["spike_cause"] == "event_same_day"]
+        .groupby("customer_code").size()
+        .to_dict()
+    )
+    customers = get_customer_list_events(sellout, Top_100=False)
+    return sorted(customers, key=lambda c: -event_counts.get(c, 0))
+
+
+@st.cache_data(show_spinner=False)
+def _compute_monthly_stats(df_full, all_events_df):
+    """Per-month spike counts + same-day event correlation, sorted by total spikes DESC."""
+    ev_dates = set(
+        all_events_df[all_events_df["event_type"].isin(["in_range", "district"])]["date"]
+    )
+    spikes = df_full[df_full["is_spike"]].copy()
+    if spikes.empty:
+        return []
+    spikes["_year"]  = pd.to_datetime(spikes["date"]).dt.year
+    spikes["_month"] = pd.to_datetime(spikes["date"]).dt.month
+    records = []
+    for (year, month), grp in spikes.groupby(["_year", "_month"]):
+        total       = len(grp)
+        event_count = sum(1 for d in grp["date"] if d in ev_dates)
+        records.append({"year": int(year), "month": int(month),
+                        "total_spikes": total, "event_spikes": event_count})
+    records.sort(key=lambda x: (-x["total_spikes"], -x["event_spikes"]))
+    return records
 
 
 # ── Card rendering ────────────────────────────────────────────────────────────
@@ -137,13 +178,21 @@ def render(sellout, sellin):
 
     st.markdown("### High-Level Overview")
     st.caption("Spike cause distribution across all customers and all years.")
-    spike_summary.render(sellout, df_events, key="spike_cause_ea2")
+    spike_summary.render(sellout, df_events, sellin=sellin, key="spike_cause_ea2")
 
     st.markdown("---")
     st.markdown("### Customer-Level Analysis")
     st.caption(
         "Drill down into a specific customer to explore individual spike dates and nearby events."
     )
+
+    cb_col1, cb_col2 = st.columns(2)
+    with cb_col1:
+        include_day_before = st.checkbox("Include day before spike", value=True, key="ea2_day_before")
+    with cb_col2:
+        include_day_after = st.checkbox("Include day after spike", value=True, key="ea2_day_after")
+    days_before = 1 if include_day_before else 0
+    days_after  = 1 if include_day_after  else 0
 
     col1, col2 = st.columns(2)
     with col1:
@@ -217,22 +266,19 @@ def render(sellout, sellin):
         threshold,
         from_date_filter,
         to_date_filter,
-        EVENT_WINDOW_DAYS,
+        days_before,
+        days_after,
     )
 
     if st.session_state.get("ea2_map_cache_key") != map_cache_key:
-        full_from = pd.Timestamp(spikes["date"].min()) - pd.Timedelta(
-            days=EVENT_WINDOW_DAYS
-        )
-        full_to = pd.Timestamp(spikes["date"].max()) + pd.Timedelta(
-            days=EVENT_WINDOW_DAYS
-        )
+        full_from = pd.Timestamp(spikes["date"].min()) - pd.Timedelta(days=days_before)
+        full_to   = pd.Timestamp(spikes["date"].max()) + pd.Timedelta(days=days_after)
 
         with st.spinner("Loading spike event data…"):
             all_shop_events = _cached_all_shop_events(
                 df_events, shop_lat, shop_lon, full_from, full_to
             )
-            spike_infos = _build_spike_infos(spikes, all_shop_events)
+            spike_infos = _build_spike_infos(spikes, all_shop_events, days_before, days_after)
 
         st.session_state["ea2_map_cache_key"] = map_cache_key
         st.session_state["ea2_spike_infos"] = spike_infos
@@ -249,55 +295,150 @@ def render(sellout, sellin):
     st.markdown("**Jump to spike date:**")
     _render_spike_cards(spike_infos, st.session_state.get("ea2_selected_date"))
 
-    # ── Map + insight ─────────────────────────────────────────────────────────
+    # ── Map + insight (only when a date is selected) ─────────────────────────
     selected_date_str = st.session_state.get("ea2_selected_date")
-    if not selected_date_str:
-        return
+    if selected_date_str:
+        spike_dt  = pd.Timestamp(selected_date_str)
+        spike_row = df[df["date"] == spike_dt]
 
-    spike_dt = pd.Timestamp(selected_date_str)
-    spike_row = df[df["date"] == spike_dt]
+        if not spike_row.empty:
+            sr          = spike_row.iloc[0]
+            weekday_avg = int(sr.get("weekday_mean", 0) or 0)
+            excess      = int(sr["sellout"]) - weekday_avg
+            z           = float(sr["z_score"])
+            df_ev       = _events_for_spike(all_shop_events, spike_dt, days_before, days_after)
+            close_names = df_ev[df_ev["event_type"].isin(["in_range", "district"])]["name"].unique()
+            far_names   = df_ev[df_ev["event_type"] == "too_far"]["name"].unique()
+            parts = [f"<b>{n}</b>" for n in close_names] + [
+                f"<b>{n}</b> <span style='font-size:11px;opacity:0.7'>(too far)</span>"
+                for n in far_names
+            ]
+            events_html = ", ".join(parts) if parts else "<i>None detected</i>"
 
-    if not spike_row.empty:
-        sr = spike_row.iloc[0]
-        weekday_avg = int(sr.get("weekday_mean", 0) or 0)
-        excess = int(sr["sellout"]) - weekday_avg
-        z = float(sr["z_score"])
-        df_ev = _events_for_spike(all_shop_events, spike_dt)
-        active_names = df_ev[df_ev["event_type"].isin(["in_range", "district"])][
-            "name"
-        ].unique()
-        events_html = (
-            ", ".join(f"<b>{n}</b>" for n in active_names)
-            if len(active_names)
-            else "<i>None detected</i>"
+            st.markdown("---")
+            st.markdown(
+                f"""<div style='background:#e8f8e8;border:1px solid #27ae60;border-radius:8px;
+                    padding:14px 18px;margin-bottom:12px'>
+                    <div style='font-weight:bold;color:#1a7a1a;font-size:15px'>
+                        Spike Insight: {spike_dt.strftime('%A %d %b %Y')}
+                    </div>
+                    <div style='margin-top:8px;color:#1a7a1a'>
+                        Volume: <b>{int(sr['sellout']):,} units</b>
+                        &nbsp;(weekday avg: {weekday_avg:,}, +{excess:,} excess)
+                        &nbsp;|&nbsp; Z-score: <b>{z:.2f}</b>
+                    </div>
+                    <div style='margin-top:6px;color:#1a7a1a'>
+                        Active events: {events_html}
+                    </div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+        # Build map for this date on demand; cache so revisiting is instant
+        if selected_date_str not in maps:
+            spike_dt_map = pd.Timestamp(selected_date_str)
+            df_ev_map    = _events_for_spike(all_shop_events, spike_dt_map, days_before, days_after)
+            maps[selected_date_str] = plot_event_map_v2(
+                shop_lat_raw, shop_lon_raw, selected_customer, df_ev_map
+            )._repr_html_()
+            st.session_state["ea2_maps"] = maps
+
+        st.components.v1.html(maps[selected_date_str], height=520)
+
+    # ── Monthly Sales — Daily Spike & Event Breakdown ─────────────────────────
+    st.markdown("---")
+    st.markdown("### Monthly Sales — Daily Spike & Event Breakdown")
+    st.caption(
+        "Daily sell-out bars coloured by spike type. "
+        "**Purple** = spike with a same-day event nearby · "
+        "**Red** = unexplained spike · "
+        "**Gray** = normal day. "
+        "Customers sorted by event-correlated spike count. Months sorted by total spike count."
+    )
+
+    c_mb1, c_mb2, c_mb3 = st.columns([1, 2, 2])
+    with c_mb1:
+        threshold_mb = st.slider(
+            "Spike threshold (z)", 0.0, 5.0, 2.0, step=0.1, key="ea2_mb_threshold"
+        )
+    with c_mb2:
+        sorted_custs_mb = _get_sorted_customers(sellout, df_events, threshold_mb)
+        sel_cust_mb = st.selectbox("Customer", sorted_custs_mb, key="ea2_mb_customer")
+
+    so_mb = sellout[sellout["customer_code"] == sel_cust_mb]
+    si_mb = sellin[sellin["customer_code"] == sel_cust_mb]
+
+    _shop_row_mb = so_mb[["latitude", "longitude"]].iloc[0]
+    _lat_mb      = _round_half_up(float(_shop_row_mb["latitude"]))
+    _lon_mb      = _round_half_up(float(_shop_row_mb["longitude"]))
+
+    df_mb_full   = _prepare_df(si_mb, so_mb, threshold_mb, so_mb)
+    _from_mb     = pd.Timestamp(so_mb["date"].min())
+    _to_mb       = pd.Timestamp(so_mb["date"].max())
+    all_ev_mb    = _cached_all_shop_events(df_events, _lat_mb, _lon_mb, _from_mb, _to_mb)
+    monthly_stats = _compute_monthly_stats(df_mb_full, all_ev_mb)
+
+    if not monthly_stats:
+        with c_mb3:
+            st.info("No spikes detected with current threshold.")
+    else:
+        month_labels = [
+            f"{_cal.month_abbr[r['month']]} {r['year']} "
+            f"— {r['total_spikes']} spike{'s' if r['total_spikes'] != 1 else ''} "
+            f"({r['event_spikes']} with event)"
+            for r in monthly_stats
+        ]
+        with c_mb3:
+            month_idx = st.selectbox(
+                "Month (sorted by spike count)",
+                range(len(month_labels)),
+                format_func=lambda i: month_labels[i],
+                key="ea2_mb_month",
+            )
+
+        rec      = monthly_stats[month_idx]
+        year_sel = rec["year"]
+        mon_sel  = rec["month"]
+
+        month_df = df_mb_full[
+            (df_mb_full["date"].dt.year  == year_sel) &
+            (df_mb_full["date"].dt.month == mon_sel)
+        ].copy()
+
+        # Same-day event lookup (in_range / district only — no day before/after)
+        ev_close    = all_ev_mb[all_ev_mb["event_type"].isin(["in_range", "district"])]
+        ev_date_set = set(ev_close["date"])
+        ev_name_map = ev_close.groupby("date")["name"].first().to_dict()
+
+        def _classify_day(row):
+            if not row["is_spike"]:
+                return "normal", None
+            if row["date"] in ev_date_set:
+                return "spike_event", ev_name_map.get(row["date"])
+            return "spike_no_event", None
+
+        classified = month_df.apply(_classify_day, axis=1, result_type="expand")
+        classified.columns = ["bar_type", "event_name"]
+        month_df = pd.concat(
+            [month_df.reset_index(drop=True), classified.reset_index(drop=True)], axis=1
         )
 
-        st.markdown("---")
-        st.markdown(
-            f"""<div style='background:#e8f8e8;border:1px solid #27ae60;border-radius:8px;
-                padding:14px 18px;margin-bottom:12px'>
-                <div style='font-weight:bold;color:#1a7a1a;font-size:15px'>
-                    Spike Insight: {spike_dt.strftime('%A %d %b %Y')}
-                </div>
-                <div style='margin-top:8px;color:#1a7a1a'>
-                    Volume: <b>{int(sr['sellout']):,} units</b>
-                    &nbsp;(weekday avg: {weekday_avg:,}, +{excess:,} excess)
-                    &nbsp;|&nbsp; Z-score: <b>{z:.2f}</b>
-                </div>
-                <div style='margin-top:6px;color:#1a7a1a'>
-                    Active events: {events_html}
-                </div>
-            </div>""",
-            unsafe_allow_html=True,
+        n_sp     = rec["total_spikes"]
+        n_ev     = rec["event_spikes"]
+        title_mb = (
+            f"<b>{_cal.month_name[mon_sel]} {year_sel} — {sel_cust_mb}</b><br>"
+            f"<sub>{n_sp} spike{'s' if n_sp != 1 else ''} · "
+            f"{n_ev} with same-day event · {n_sp - n_ev} unexplained"
+            f"</sub>"
         )
 
-    # Build map for this date on demand; cache so revisiting is instant
-    if selected_date_str not in maps:
-        spike_dt_map = pd.Timestamp(selected_date_str)
-        df_ev_map = _events_for_spike(all_shop_events, spike_dt_map)
-        maps[selected_date_str] = plot_event_map_v2(
-            shop_lat_raw, shop_lon_raw, selected_customer, df_ev_map
-        )._repr_html_()
-        st.session_state["ea2_maps"] = maps
+        # ── Chart 1: Bar chart ────────────────────────────────────────────────
+        fig_bars = plot_monthly_sales_bars(month_df, title_mb)
+        st.plotly_chart(fig_bars, use_container_width=True, key="ea2_mb_bars")
 
-    st.components.v1.html(maps[selected_date_str], height=520)
+        # ── Chart 2: Line chart ───────────────────────────────────────────────
+        fig_line = plot_monthly_sales_line(
+            month_df,
+            f"Sell-out trend — {_cal.month_name[mon_sel]} {year_sel}",
+        )
+        st.plotly_chart(fig_line, use_container_width=True, key="ea2_mb_line")

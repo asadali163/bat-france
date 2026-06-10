@@ -134,38 +134,75 @@ def plot_event_map_v2(shop_lat, shop_lon, shop_name, df_events):
         popup=folium.Popup(f"<b>{shop_name}</b><br>Outlet", max_width=200),
     ).add_to(m)
 
+    _TYPE_PRIORITY = {"in_range": 0, "district": 1, "too_far": 2}
+
+    # Draw impact circles per event (each may have a different radius)
     for _, row in df_events.iterrows():
-        evt_color = _EVT_COLORS.get(row.get("event_type", "too_far"), "gray")
-        cap_str = f"{int(row['estimated_capacity']):,}" if pd.notna(row.get("estimated_capacity")) else "N/A"
-        popup_html = (
-            f"<b>{row['name']}</b><br>"
-            f"&#128197; {row['date'].date()}&nbsp;{row.get('time','')}<br>"
-            f"&#128205; {row['venue']}<br>"
-            f"&#128101; Capacity: {cap_str}<br>"
-            f"&#128207; {int(row['distance_m'])} m away<br>"
-            f"&#127919; Impact radius: {800 if row.get('source') == 'df_e_r' else int(row['impact_radius_m'])} m<br>"
-            f"<i>{row.get('event_type','').replace('_',' ').title()}</i>"
-        )
-        if row.get("event_type") in ("in_range", "district"):
-            circle_radius = 800 if row.get("source") == "df_e_r" else int(row["impact_radius_m"])
-            folium.Circle(
-                location=[row["venue_lat"], row["venue_lon"]],
-                radius=circle_radius,
-                color=evt_color,
-                fill=True,
-                fill_opacity=0.10,
-                weight=1.5,
-            ).add_to(m)
+        evt_color    = _EVT_COLORS.get(row.get("event_type", "too_far"), "gray")
+        circle_radius = 800 if row.get("source") == "df_e_r" else int(row["impact_radius_m"])
+        folium.Circle(
+            location=[row["venue_lat"], row["venue_lon"]],
+            radius=circle_radius,
+            color=evt_color,
+            fill=True,
+            fill_opacity=0.10,
+            weight=1.5,
+        ).add_to(m)
+
+    # Group events by exact location so stacked markers become one combined popup
+    for (vlat, vlon), grp in df_events.groupby(["venue_lat", "venue_lon"]):
+        grp = grp.reset_index(drop=True)
+
+        # Pick marker colour from the highest-priority event type at this location
+        best_type  = grp["event_type"].map(lambda x: _TYPE_PRIORITY.get(x, 3)).idxmin()
+        evt_color  = _EVT_COLORS.get(grp.loc[best_type, "event_type"], "gray")
+
+        if len(grp) == 1:
+            row     = grp.iloc[0]
+            cap_str = f"{int(row['estimated_capacity']):,}" if pd.notna(row.get("estimated_capacity")) else "N/A"
+            popup_html = (
+                f"<b>{row['name']}</b><br>"
+                f"&#128197; {row['date'].date()}&nbsp;{row.get('time', '')}<br>"
+                f"&#128205; {row['venue']}<br>"
+                f"&#128101; Capacity: {cap_str}<br>"
+                f"&#128207; {int(row['distance_m'])} m away<br>"
+                f"&#127919; Impact radius: "
+                f"{800 if row.get('source') == 'df_e_r' else int(row['impact_radius_m'])} m<br>"
+                f"<i>{row.get('event_type', '').replace('_', ' ').title()}</i>"
+            )
+            tooltip = row["name"]
+        else:
+            # Multiple events at the same venue — list all in one scrollable popup
+            parts = []
+            for i, row in grp.iterrows():
+                cap_str = f"{int(row['estimated_capacity']):,}" if pd.notna(row.get("estimated_capacity")) else "N/A"
+                sep = "<hr style='margin:5px 0'>" if i > 0 else ""
+                parts.append(
+                    f"{sep}"
+                    f"<b>{row['name']}</b><br>"
+                    f"&#128197; {row['date'].date()}&nbsp;{row.get('time', '')}<br>"
+                    f"&#128205; {row['venue']}<br>"
+                    f"&#128101; Capacity: {cap_str}<br>"
+                    f"&#128207; {int(row['distance_m'])} m away<br>"
+                    f"&#127919; Impact: "
+                    f"{800 if row.get('source') == 'df_e_r' else int(row['impact_radius_m'])} m · "
+                    f"<i>{row.get('event_type', '').replace('_', ' ').title()}</i>"
+                )
+            popup_html = (
+                f"<div style='font-size:12px;max-height:300px;overflow-y:auto'>"
+                f"{''.join(parts)}</div>"
+            )
+            tooltip = f"{len(grp)} events here — click for details"
 
         folium.CircleMarker(
-            location=[row["venue_lat"], row["venue_lon"]],
+            location=[vlat, vlon],
             radius=7,
             color=evt_color,
             fill=True,
             fill_color=evt_color,
             fill_opacity=0.9,
-            tooltip=row["name"],
-            popup=folium.Popup(popup_html, max_width=270),
+            tooltip=tooltip,
+            popup=folium.Popup(popup_html, max_width=300),
         ).add_to(m)
 
     m.get_root().html.add_child(folium.Element(_LEGEND_HTML))

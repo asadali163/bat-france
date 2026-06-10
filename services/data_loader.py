@@ -46,9 +46,11 @@ def load_sell_data():
         & (df["sku_code"].astype(str).str.strip() != "0")
     ].copy()
     df_sellout = df_sellout[df_sellout["customer_code"] != 0].copy()
-    # df_sellout["category"] = df_sellout["category"].fillna("FMC")
+    df_sellout["category"] = df_sellout["category"].fillna("FMC")
     # df_sellin = df_sellin[df_sellin["category"] == "FMC"].copy()
     # df_sellout = df_sellout[df_sellout["category"] == "FMC"].copy()
+    df_sellout = df_sellout[df_sellout["date"] <= "2025-12-31"].copy()
+    df_sellin = df_sellin[df_sellin["date"] <= "2025-12-31"].copy()
     return df_sellin, df_sellout
 
 
