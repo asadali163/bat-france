@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore")
+
 import streamlit as st
 from views import weather_analysis, event_analysis, event_analysis2, forecasting
 from services.data_loader import load_sell_data

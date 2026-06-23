@@ -197,8 +197,17 @@ def render(sellout, sellin):
     col1, col2 = st.columns(2)
     with col1:
         customer_list = get_customer_list_events(sellout, Top_100=False)
+        _cust_name_map = (
+            sellout[["customer_code", "customer_name"]]
+            .drop_duplicates("customer_code")
+            .set_index("customer_code")["customer_name"]
+            .to_dict()
+        )
         selected_customer = st.selectbox(
-            "Select Customer", customer_list, key="ea2_customer"
+            "Select Customer",
+            customer_list,
+            format_func=lambda code: f"{_cust_name_map.get(code, code)} ({code})",
+            key="ea2_customer",
         )
         if st.session_state.get("ea2_prev_customer") != selected_customer:
             st.session_state["ea2_selected_date"] = None
